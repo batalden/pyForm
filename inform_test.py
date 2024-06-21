@@ -95,6 +95,7 @@ This concludes the message format. Below is an ASCII representation of a top vie
 '''
 
 
+
 def list_ports(): #Stupid function which guesses ports 
     ports = []    #as a way of listing them.
     print('finding ports')
@@ -110,7 +111,7 @@ def list_ports(): #Stupid function which guesses ports
     print('done')
     return ports
 
-def sendToBoard(port, boardID, values, reply, config = False, inTermID = None): #The only function that actually writes to the serial ports.
+def sendToBoard(boardID, values, reply, config = False, inTermID = None): #The only function that actually writes to the serial ports.
     
     if not config: #config is a boolean which is true when sendToBoard is being used to update the control parameters of the motor.
         flipped = ((boardID-5)%12) < 4  #Some of the boards are installed "upside down". Because of this, when pin heights are sent to the board,
@@ -120,13 +121,17 @@ def sendToBoard(port, boardID, values, reply, config = False, inTermID = None): 
             termID = 246
         message = [termID,boardID] + values #The message is ultimately an array of bytes, but we assemble it as a list of integers.
         if flipped:                             #Convention for message format is explained at the top of the file, but it starts with a number (the termID) higher than 245
-            message[2:] = [260-i for i in message[2:]]  #then has its content. This is read until the next number greater than 245 (the start of the next message)
-        byteMessage = bytearray(message)
-        port.write(byteMessage)
+            message[2:] = [260-i for i in message[2:]]  #then has its content. This is read until the next number greater than 245 (the start of the next message)       
     else:                                   
         message = [inTermID,boardID] + values #When sending config, the termID is included in the inputs, and flipped boards are no longer a concern.
-        byteMessage = bytearray(message)
-        port.write(byteMessage)
+    byteMessage = bytearray(message)
+    if boardID < 37:
+        port = port3
+    elif boardID < 61:
+        port = port2
+    else:
+        port = port1
+    port.write(byteMessage)
 
 def read(port, wait = True):                 #Unused as of 6/21/24. Reads a message from a board and returns it as a dict.
     result = {}                              #The dicts look like this: {'boardID':43,'faderPositions':[55,55,200,55,55,55]}
@@ -153,49 +158,57 @@ def coordToPin(x,y):                              #Converts an x and y coordinat
     return [boardNum,pinNum]
 
 
-def sendFullResetTo55(port1,port2,port3): #Pin control function. Resets the whole board to 55, slightly above the absolute minimum value 50.
+def sendFullResetTo55(): #Pin control function. Resets the whole board to 55, slightly above the absolute minimum value 50.
     pins = [55,55,55,55,55,55]
     for i in range(96):
-        sendToBoard(port1, i, pins, True)
-        sendToBoard(port2, i, pins, True)
-        sendToBoard(port3, i, pins, True)
+        sendToBoard(i, pins, True)
 
-def sendIndividualPinValue(port1,port2,port3,x,y,value): #Pin control function. Sets one pin on the board to a specified value,
+
+def sendFullResetToValue(port1,port2,port3,value): #Pin control function. Resets the whole board to 55, slightly above the absolute minimum value 50.
+    pins = [value]*6
+    for i in range(96):
+        sendToBoard(i, pins, True)
+
+
+def sendIndividualPinValue(x,y,value): #Pin control function. Sets one pin on the board to a specified value,
     location = coordToPin(x,y)                           #resets the other pins on that board to 55.
     boardID = location[0]
     pinNumber = location[1]
     pins = [55]*6
     pins[pinNumber] = value
-    sendToBoard(port1, boardID, pins, True)
-    sendToBoard(port2, boardID, pins, True)
-    sendToBoard(port3, boardID, pins, True)
+    #sendToBoard(port1, boardID, pins, True)
+    sendToBoard(boardID, pins, True)
+    #sendToBoard(port3, boardID, pins, True)
 
 
 
-def sendSinFunction(port1,port2,port3,inT=0):  #Sends a 3d function to the pins with an optional time argument to simulate motion. 
-    t = inT/5                                  #The function is a transformation of sin(x)sin(y).
+def sendSinFunction(inT=0):  #Sends a 3d function to the pins with an optional time argument to simulate motion. 
+    t = inT                                  #The function is a transformation of sin(x)sin(y).
     bunches = []
     pinList = []
     for x in range(24):
         for y in range(24):
             pinList.append([int(100*((math.sin((x-t)/10)*math.sin((y-t)/10))**2)+60)] + coordToPin(x,y))
+    sendValXYsToBoard(pinList)
 
+
+def sendValXYsToBoard(valXYs):
     for i in range(96):
         pins = [50,50,50,50,50,50]
-        for pinIndex in range(len(pinList)):
-            if pinList[pinIndex][1] == i:
-                pins[pinList[pinIndex][2]] = int(pinList[pinIndex][0])
+        for pinIndex in range(len(valXYs)):
+            if valXYs[pinIndex][1] == i:
+                pins[valXYs[pinIndex][2]] = int(valXYs[pinIndex][0])
 
+        if i == 67:
+            pins[2] = 55
+        sendToBoard(i, pins, True)
+
+    
         
-        sendToBoard(port1, i, pins, True)
-        sendToBoard(port2, i, pins, True)
-        sendToBoard(port3, i, pins, True)
 
-        
-
-def sendDefaultConfigs(port1,port2,port3): #Sends the default configuration to the boards, as recorded in the C++ OpenFrameworks code base
+def sendDefaultConfigs(boardNum = None): #Sends the default configuration to the boards, as recorded in the C++ OpenFrameworks code base
     gainP = 1.5
-    gainI = 0.045
+    gainI = 0#0.045
     maxI = 25
     deadZone = 2
     maxSpeed = 200
@@ -206,40 +219,63 @@ def sendDefaultConfigs(port1,port2,port3): #Sends the default configuration to t
                                        #Since some of these numbers are not integers, they were multiplied to be larger so that they would fit in a byte.
                                        #Not sure why maxSpeed is halved. Maybe they were worried that it would be read as a signed int "-72" since it has a leading 1.
     configs = [configs[i]*multipliers[i] for i in range(len(configs))]
-    for i in range(len(configs)):
-        for n in range(1,97):
-            sendToBoard(port1, n, [int(configs[i])]*6, False, config = True, inTermID = termIDs[i])
-            sendToBoard(port2, n, [int(configs[i])]*6, False, config = True, inTermID = termIDs[i])
-            sendToBoard(port3, n, [int(configs[i])]*6, False, config = True, inTermID = termIDs[i])
-            
+    if not boardNum:
+        for i in range(len(configs)):
+            for n in range(1,97):
+                sendToBoard(n, [int(configs[i])]*6, False, config = True, inTermID = termIDs[i])
 
+    else:
+        sendToBoard(boardNum, [int(configs[i])] * 6, False, config = True, inTermID = termIDs[i])
+        
+                
+
+print('connecting')
 
 port1 = serial.Serial('COM7',  115200, timeout=1)  #Opens the ports. On my (Amos Batalden) computer, the ports get these names when I connect to the inForm.
 port2 = serial.Serial('COM8',  115200, timeout=1)  #On your machine you'll have to interrupt excecution and run the list_ports() function with and without the inForm
 port3 = serial.Serial('COM10',  115200, timeout=1) #connected to deduce which ports connect to the machine. Alternatively, you could write a function that sends 
-sendDefaultConfigs(port1,port2,port3)              #messages to each port with term ID 253 (request heights), then identify the ports that way.
-
+sendDefaultConfigs()                  #messages to each port with term ID 253 (request heights), then identify the ports that way.
 
 
 #  -------------------------------------------------------
 #  Code below here determines what the shape display plays.
 #  -------------------------------------------------------
 
-sendResetTo55(port1,port2,port3)  #simple diagnostic that fires each pin one at a time
+
+
+#sendFullResetTo55(port1,port2,port3)
+#sendIndividualPinValue(port1,port2,port3,0,0,140)
+
+
+
+#sendFullResetToValue(port1,port2,port3,55)
+
+#for i in range(60,200):
+#    pinList = []
+#    for x in range(24):
+#        pinList.append([i,x,0])
+#    sendValXYsToBoard(pinList,port1,port2,port3)
+
+
+
+
+
+
+
+sendFullResetTo55()  #simple diagnostic that fires each pin one at a time
+'''
 for i in range(5):
     for x in range(24):
         for y in range(24):
             if not (x == 0 and y == 0):
-                sendIndividualPinValue(port1,port2,port3,lastPin[0],lastPin[1],55)
-            sendIndividualPinValue(port1,port2,port3,x,y,200)
+                sendIndividualPinValue(lastPin[0],lastPin[1],55)
+            sendIndividualPinValue(x,y,200)
             lastPin = [x,y]
-            time.sleep(0.3)
-        
-            
-            
-    
-
-    
+            time.sleep(0.1)
+'''
+for i in range(1000):
+    sendSinFunction(i)
+    time.sleep(0.05)
 
 
 
